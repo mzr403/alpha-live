@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="fr"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Solana Alpha Engine — marché en direct (paper)</title>
+<style>
+:root{--bg:#0e1320;--pn:#151c2e;--ln:#243049;--tx:#dbe3f4;--mu:#8693ad;--gn:#55d6a8;--ls:#f07178;--ac:#7aa2ff;--wn:#f2b84b;color-scheme:dark}
+*{box-sizing:border-box}html{background:var(--bg)}
+body{margin:auto;background:var(--bg);color:var(--tx);font:14px/1.45 system-ui,"Segoe UI",sans-serif;font-variant-numeric:tabular-nums;padding:12px;max-width:1250px}
+h1{font-size:18px;margin:0 0 8px}h2{font-size:13px;margin:0 0 8px;color:var(--mu);font-weight:600}
+.ban{background:#2a2312;border:1px solid var(--wn);color:var(--wn);padding:8px 10px;border-radius:6px;margin-bottom:10px;font-size:13px}
+.pn{background:var(--pn);border:1px solid var(--ln);border-radius:8px;padding:10px;margin-bottom:10px}
+.row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+button{background:#1d2740;color:var(--tx);border:1px solid var(--ln);border-radius:6px;padding:7px 12px;font:inherit;cursor:pointer}
+button:hover{border-color:var(--ac)}button:focus-visible,input:focus-visible{outline:2px solid var(--ac)}
+button.go{background:#173a36;border-color:var(--gn)}button.stop{background:#3b1a20;border-color:var(--ls)}button.on{border-color:var(--wn);color:var(--wn)}
+label{color:var(--mu);font-size:12px;display:flex;flex-direction:column;gap:2px}
+input[type=range]{width:130px}input[type=number],input[type=text]{background:#0e1320;color:var(--tx);border:1px solid var(--ln);border-radius:4px;padding:4px;width:90px}
+input#rpc{width:280px}
+.kp{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;margin-bottom:10px}
+.kp div{background:var(--pn);border:1px solid var(--ln);border-radius:8px;padding:8px 10px}.kp b{display:block;font-size:18px}.kp span{color:var(--mu);font-size:12px}
+.sc{overflow-x:auto}table{border-collapse:collapse;width:100%;font-size:12.5px}th,td{padding:5px 8px;text-align:right;border-bottom:1px solid var(--ln);white-space:nowrap}
+th{color:var(--mu);font-weight:600}th:first-child,td:first-child,th.l,td.l{text-align:left}
+.g{color:var(--gn)}.r{color:var(--ls)}.m{color:var(--mu)}.w{color:var(--wn)}
+canvas{width:100%;height:160px;display:block}#log{max-height:220px;overflow:auto;font-size:12px}#log div{padding:2px 0;border-bottom:1px solid var(--ln)}
+textarea{width:100%;height:90px;background:#0e1320;color:var(--tx);border:1px solid var(--ln);margin-top:8px}
+.st{padding:2px 8px;border-radius:10px;border:1px solid var(--ln);font-size:12px}
+</style></head><body>
+<h1>Solana Alpha Engine <span id="st" class="st">arrêté</span></h1>
+<div class="ban">Paper trading sur marché réel : les prix viennent de DexScreener, aucun ordre n’est envoyé et aucun argent réel n’est engagé. Les prix sont indicatifs (pas de devis exécutable) : le slippage est estimé. Gardez cet onglet ouvert, le bot ne tourne que pendant qu’il est ouvert.</div>
+<div class="pn"><div class="row">
+<button class="go" id="bStart">Démarrer</button><button id="bPause">Pause des entrées</button><button class="stop" id="bEmerg">Arrêt d’urgence</button><button id="bDiag">Tester la connexion</button><button id="bReset">Réinitialiser</button>
+<label>RPC Solana<input type="text" id="rpc" value="https://api.mainnet-beta.solana.com"></label>
+<label>USD par AUD<input type="number" id="fx" value="0.65" step="0.01"></label>
+<label>Top 10 max (%)<input type="number" id="top10" value="50"></label>
+</div><div class="row" style="margin-top:10px">
+<label>Risque par trade : <span id="vR">0,5</span> %<input type="range" id="risk" min="0.1" max="2" step="0.1" value="0.5"></label>
+<label>Perte max/jour : <span id="vD">3</span> %<input type="range" id="dayLoss" min="1" max="10" step="1" value="3"></label>
+<label>Frais ×<span id="vF">1</span><input type="range" id="feeM" min="1" max="8" step="1" value="1"></label>
+<label><span><input type="checkbox" id="eS" checked> Scalping</span><span><input type="checkbox" id="eI" checked> Intraday</span></label>
+</div><div id="net" class="m" style="margin-top:8px;font-size:12px"></div></div>
+<div class="kp" id="kp"></div>
+<div class="pn"><h2>Courbe de capital (AUD, simulé)</h2><canvas id="cv"></canvas></div>
+<div class="pn sc"><h2>Scanner en direct</h2><table id="tScan"></table></div>
+<div class="pn sc"><h2>Positions ouvertes</h2><table id="tPos"></table></div>
+<div class="pn sc"><h2>Derniers trades <button id="bCsv" style="float:right;padding:2px 8px">Copier CSV</button></h2><table id="tTr"></table><textarea id="csv" hidden readonly></textarea></div>
+<div class="pn"><h2>Journal des décisions</h2><div id="log"></div></div>
+<script>
+const $=i=>document.getElementById(i),f=(x,n=2)=>Number(x).toFixed(n).replace(".",","),sum=a=>a.reduce((x,y)=>x+y,0);
+const DS="https://api.dexscreener.com",SEED=["DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263","EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm"];
+const CFG={scalp:{tp:.08,sl:.05,min:80,hold:15},intraday:{tp:.15,sl:.08,min:75,hold:180}},TOKPROG="TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
+const P={risk:.5,dayLoss:3,feeM:1},POLL=10000;
+let S,T={},U=[...SEED],src="",timer=null,paused=false,lastDisc=0,lastOk=0,err="";
+const fee=()=>.0025*P.feeM,nf=()=>.02*P.feeM,FX=()=>+$("fx").value||.65,now=()=>Date.now();
+const dk=()=>Math.floor(now()/864e5),wk=()=>Math.floor((now()/864e5+3)/7);
+function init(fresh){let o=null;try{if(!fresh)o=JSON.parse(localStorage.getItem("sae")||"null")}catch(e){}
+ S=o||{cash:500,pos:[],tr:[],cool:{},eq:[],log:[],dayK:dk(),dayStart:500,weekK:wk(),weekStart:500,halt:"",stopped:false};if(fresh)try{localStorage.removeItem("sae")}catch(e){}}
+function save(){try{localStorage.setItem("sae",JSON.stringify(S))}catch(e){}}
+function log(m,c=""){S.log.unshift(`<div class="${c}">${new Date().toLocaleTimeString("fr-FR")} · ${m}</div>`);S.log.length=Math.min(S.log.length,100)}
+const tmo=(p,ms=8000)=>Promise.race([p,new Promise((_,j)=>setTimeout(()=>j(new Error("délai dépassé")),ms))]);
+async function jget(u){const r=await tmo(fetch(u));if(!r.ok)throw new Error("HTTP "+r.status);return await tmo(r.json())}
+async function rpc(m,p){const r=await tmo(fetch($("rpc").value,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({jsonrpc:"2.0",id:1,method:m,params:p})}));if(!r.ok)throw new Error("RPC HTTP "+r.status);return await tmo(r.json())}
+function parse(p){try{if(p.chainId!=="solana")return null;const x=p.txns.m5,o={addr:p.baseToken.address,name:p.baseToken.symbol,pair:p.pairAddress,price:+p.priceUsd,liq:+p.liquidity.usd,v5:+p.volume.m5,v1:+p.volume.h1,buys:+x.buys,sells:+x.sells,ch5:+p.priceChange.m5/100,age:p.pairCreatedAt?(now()-p.pairCreatedAt)/6e4:1e9};
+ return Object.values(o).every(v=>typeof v!=="number"||isFinite(v))&&o.price>0?o:null}catch(e){return null}}
+async function discover(){const add=[];for(const u of ["/token-profiles/latest/v1","/token-boosts/latest/v1"]){try{const j=await jget(DS+u);(Array.isArray(j)?j:[]).forEach(x=>{if(x.chainId==="solana"&&x.tokenAddress)add.push(x.tokenAddress)})}catch(e){}}
+ U=[...new Set([...SEED,...S.pos.map(p=>p.addr),...add])].slice(0,30);lastDisc=now()}
+const finite=o=>Object.values(o).every(v=>typeof v!=="number"||isFinite(v))&&o.price>0?o:null;
+function gparse(p){try{const a=p.attributes,x=a.transactions.m5;return finite({addr:p.relationships.base_token.data.id.replace(/^solana_/,""),name:(a.name||"?").split(" / ")[0],pair:a.address,price:+a.base_token_price_usd,liq:+a.reserve_in_usd,v5:+a.volume_usd.m5,v1:+a.volume_usd.h1,buys:+x.buys,sells:+x.sells,ch5:+a.price_change_percentage.m5/100,age:a.pool_created_at?(now()-Date.parse(a.pool_created_at))/6e4:1e9})}catch(e){return null}}
+function ingest(best){Object.values(best).forEach(o=>{const t=T[o.addr]||(T[o.addr]={hist:[],lastH:0,sec:null,secT:0,pend:false,why:"—"});Object.assign(t,o,{seen:now()});if(now()-t.lastH>=6e4){t.hist.push(t.price);t.lastH=now();if(t.hist.length>80)t.hist.shift()}})}
+async function fromDex(){if(now()-lastDisc>3e5)await discover();
+ const j=await jget(`${DS}/latest/dex/tokens/${[...new Set([...U,...S.pos.map(p=>p.addr)])].slice(0,30).join(",")}`),best={};
+ (j.pairs||[]).forEach(p=>{const o=parse(p);if(o&&(!best[o.addr]||o.liq>best[o.addr].liq))best[o.addr]=o});return best}
+async function fromGecko(){const best={};for(const u of ["trending_pools","new_pools"]){const j=await jget(`https://api.geckoterminal.com/api/v2/networks/solana/${u}`);(j.data||[]).forEach(p=>{const o=gparse(p);if(o&&(!best[o.addr]||o.liq>best[o.addr].liq))best[o.addr]=o})}return best}
+async function poll(){let best=null,e1="",e2="";
+ try{best=await fromDex();src="DexScreener"}catch(e){e1=String(e.message||e)}
+ if(!best||!Object.keys(best).length){try{best=await fromGecko();src="GeckoTerminal (secours)"}catch(e){e2=String(e.message||e)}}
+ if(best&&Object.keys(best).length){ingest(best);lastOk=now();err=""}else err=`DexScreener : ${e1||"aucune paire valide"} · GeckoTerminal : ${e2||"aucune paire valide"}. Si c’est « Failed to fetch », le navigateur ou l’aperçu bloque les requêtes : ouvrez le fichier dans Chrome, Firefox ou Safari, ou via un petit serveur local.`;
+ cycle();render()}
+async function diag(){const out=[],T1=async(n,fn)=>{try{await fn();out.push(n+" : OK")}catch(e){out.push(n+" : ÉCHEC ("+(e.message||e)+")")}};
+ $("net").className="m";$("net").textContent="Test en cours…";
+ await T1("DexScreener",()=>jget(DS+"/token-profiles/latest/v1"));await T1("GeckoTerminal",()=>jget("https://api.geckoterminal.com/api/v2/networks/solana/trending_pools"));await T1("RPC Solana",()=>rpc("getHealth",[]));
+ $("net").textContent=out.join(" · ");$("net").className=out.some(x=>x.includes("ÉCHEC"))?"w":"g"}
+async function secCheck(t){t.pend=true;try{const a=await rpc("getAccountInfo",[t.addr,{encoding:"jsonParsed"}]),l=await rpc("getTokenLargestAccounts",[t.addr]),s=await rpc("getTokenSupply",[t.addr]);
+ const v=a.result.value,i=v.data.parsed.info,tot=+s.result.value.uiAmount,top=sum(l.result.value.slice(0,10).map(x=>+x.uiAmount))*100/tot;
+ if(!isFinite(top))throw 0;t.sec={mint:i.mintAuthority===null,frz:i.freezeAuthority===null,top,std:v.owner===TOKPROG};t.secT=now()}catch(e){t.sec=null;t.secT=now()-54e4}t.pend=false}
+function secEval(s){if(!s)return["données indisponibles"];const r=[];if(!s.std)r.push("Token-2022 / non standard");if(!s.mint)r.push("mint actif");if(!s.frz)r.push("freeze actif");if(s.top>+$("top10").value)r.push(`top10 ${f(s.top,0)} %`);return r}
+const sc=t=>{const n=t.buys+t.sells,ra=n?t.buys/n:0,rel=t.v1?t.v5*12/t.v1:0;return(ra>=.6?35:0)+(rel>=2?30:0)+(t.ch5>=.02&&t.ch5<=.15?25:0)+(t.liq>=1e5?10:0)};
+function intra(t){const h=t.hist.slice(0,-1);if(h.length<12)return-1;const a=h.slice(-12,-8),b=h.slice(-8,-4),c=h.slice(-4),M=Math.max,m=Math.min,rng=(M(...h)-m(...h))/h[h.length-1],rel=t.v1?t.v5*12/t.v1:0;
+ return(M(...c)>M(...b)&&M(...b)>M(...a)?30:0)+(m(...c)>m(...b)&&m(...b)>m(...a)?30:0)+(rel>=1.2?20:0)+(rng>=.03&&rng<=.5?10:0)+(t.liq>=1e5?10:0)}
+const eq=()=>S.cash+sum(S.pos.map(p=>{const t=T[p.addr];return p.qty*(t?t.price:p.px)/FX()}));
+function open(t,st,score){const c=CFG[st],fe=fee();let size=Math.min(eq()*P.risk/100/c.sl,t.liq/FX()*.02,(S.cash-nf())/(1+fe));
+ if(size<5){t.why="taille < 5 AUD";return false}const imp=size*FX()/t.liq;if(imp>.02){t.why="impact trop élevé";return false}
+ const px=t.price*(1+imp),fees=size*fe+nf();S.cash-=size+fees;S.pos.push({addr:t.addr,name:t.name,st,px,size,qty:size*FX()/px,tp:px*(1+c.tp),sl:px*(1-c.sl),t0:now(),fees,score,hold:c.hold});
+ S.cool[t.addr]=now();log(`Ouverture ${t.name} (${st}) ${f(size)} AUD à ${px.toPrecision(4)} $, score ${score}`,"g");return true}
+function close(p,why){const t=T[p.addr];if(!t){log(`Impossible de clôturer ${p.name} : pas de prix récent`,"r");return}
+ const imp=Math.min(.95,p.size*FX()/t.liq),px=t.price*(1-imp),pr=p.qty*px/FX(),fe=pr*fee()+nf(),net=pr-fe-p.size-p.fees;
+ S.cash+=pr-fe;S.pos.splice(S.pos.indexOf(p),1);S.cool[p.addr]=now();S.tr.unshift({t0:p.t0,t1:now(),name:p.name,st:p.st,entry:p.px,exit:px,size:p.size,fees:p.fees+fe,net,why});log(`Sortie ${p.name} : ${why}, net ${f(net)} AUD`,net>0?"g":"r")}
+function cycle(){const n=now();
+ [...S.pos].forEach(p=>{const t=T[p.addr];if(!t||n-t.seen>45e3)return;const w=t.price<=p.sl?"stop-loss":t.price>=p.tp?"take-profit":(n-p.t0)/6e4>=p.hold?"sortie temps":null;if(w)close(p,w)});
+ if(dk()!==S.dayK){S.dayK=dk();S.dayStart=eq();if(S.halt==="jour"){S.halt="";log("Nouveau jour : reprise des entrées","w")}}
+ if(wk()!==S.weekK){S.weekK=wk();S.weekStart=eq();if(S.halt==="semaine")S.halt=""}
+ const e=eq();if(!S.halt&&e<=S.dayStart*(1-P.dayLoss/100)){S.halt="jour";log("Disjoncteur : perte journalière atteinte, entrées bloquées","r")}
+ if(!S.halt&&e<=S.weekStart*.93){S.halt="semaine";log("Disjoncteur : perte hebdomadaire de 7 % atteinte","r")}
+ const stale=n-lastOk>45e3;
+ Object.values(T).forEach(t=>{t.sa=sc(t);t.ia=intra(t);
+  const bl=S.halt?"disjoncteur actif":paused?"entrées en pause":S.stopped?"arrêt d’urgence":stale?"données périmées":null;
+  if(S.pos.some(p=>p.addr===t.addr))return t.why="position ouverte";if(bl)return t.why=bl;if(n-(S.cool[t.addr]??0)<18e5)return t.why="cooldown";
+  if(t.liq<25000)return t.why="liquidité < 25 k$";if(n-t.seen>45e3)return t.why="prix périmé";
+  const tr=[];if($("eS").checked&&t.sa>=CFG.scalp.min)tr.push(["scalp",t.sa]);if($("eI").checked&&t.ia>=CFG.intraday.min)tr.push(["intraday",t.ia]);
+  if(!tr.length)return t.why=`scores ${t.sa}/${t.ia<0?"—":t.ia} sous les seuils`;
+  if(S.pos.length>=2)return t.why="2 positions max";
+  if(t.pend)return t.why="vérification sécurité…";
+  if(n-t.secT>6e5){secCheck(t);return t.why="vérification sécurité…"}
+  const r=secEval(t.sec);if(r.length){if(!t.logged){t.logged=1;log(`Rejet sécurité ${t.name} : ${r.join(", ")}`,"m")}return t.why="sécurité : "+r[0]}
+  for(const [st,s] of tr)if(open(t,st,s)){t.why="entrée "+st;break}});
+ S.eq.push(eq());if(S.eq.length>3000)S.eq.shift();save()}
+function emergency(){S.stopped=true;[...S.pos].forEach(p=>close(p,"arrêt d’urgence"));log("Arrêt d’urgence : entrées bloquées. En réel la vente pourrait échouer ou glisser.","r");stop();cycle();render()}
+function wilson(w,n){if(!n)return"—";const p=w/n,z=1.96,d=1+z*z/n,c=(p+z*z/(2*n))/d,h=z*Math.sqrt(p*(1-p)/n+z*z/(4*n*n))/d;return`${f(100*(c-h),0)}–${f(100*(c+h),0)} %`}
+function render(){const e=eq(),n=S.tr.length,w=S.tr.filter(t=>t.net>0).length,gl=-sum(S.tr.filter(t=>t.net<=0).map(t=>t.net)),gw=sum(S.tr.filter(t=>t.net>0).map(t=>t.net));
+ let pk=0,dd=0;S.eq.forEach(v=>{pk=Math.max(pk,v);dd=Math.max(dd,(pk-v)/pk)});
+ $("st").textContent=S.halt?"disjoncteur":S.stopped?"arrêt d’urgence":!timer?"arrêté":paused?"en pause":"en cours";
+ $("net").textContent=err?"Erreur de données : "+err:lastOk?`Source : ${src} · dernière mise à jour il y a ${Math.round((now()-lastOk)/1000)} s · ${Object.keys(T).length} tokens suivis · intraday : 13 min d’historique requis par token`:"En attente de données…";$("net").className=err?"r":"m";
+ const K=(a,b,c="")=>`<div><span>${a}</span><b class="${c}">${b}</b></div>`,cl=v=>v>=0?"g":"r";
+ $("kp").innerHTML=K("Capital simulé",f(e)+" AUD",cl(e-500))+K("Liquidités",f(S.cash)+" AUD")+K("P&L total",f(e-500)+" AUD",cl(e-500))+K("P&L du jour",f(e-S.dayStart)+" AUD",cl(e-S.dayStart))+K("Taux de réussite",n?f(100*w/n,0)+" %":"—")+K("IC 95 %",wilson(w,n),"m")+K("Profit factor",gl?f(gw/gl):"—")+K("Drawdown max",f(dd*100,1)+" %")+K("Trades",n);
+ const row=(a,c)=>`<tr>${a.map((x,i)=>`<td class="${i==0?"l":""} ${c&&c[i]||""}">${x}</td>`).join("")}</tr>`;
+ const L=Object.values(T).sort((a,b)=>Math.max(b.sa,b.ia)-Math.max(a.sa,a.ia));
+ $("tScan").innerHTML="<tr><th>Token</th><th>Prix $</th><th>Liquidité</th><th>Vol. 5 min</th><th>Achats</th><th>Var. 5 min</th><th>Scalp</th><th>Intraday</th><th>Sécurité</th><th class=l>Décision</th></tr>"+
+  (L.length?L.map(t=>{const nn=t.buys+t.sells,sd=t.sec?(secEval(t.sec).length?"rejet":"ok"):"—";return row([t.name,t.price.toPrecision(4),f(t.liq/1000,0)+" k$",f(t.v5/1000,1)+" k$",nn?f(100*t.buys/nn,0)+" %":"—",f(t.ch5*100,1)+" %",t.sa,t.ia<0?`${t.hist.length}/13`:t.ia,sd,t.why],{5:cl(t.ch5),8:sd==="ok"?"g":sd==="rejet"?"r":"m",9:"m"})}).join(""):`<tr><td class="l m" colspan="10">Aucune donnée. Appuyez sur Démarrer.</td></tr>`);
+ $("tPos").innerHTML="<tr><th>Token</th><th>Stratégie</th><th>Entrée $</th><th>Actuel $</th><th>Taille</th><th>P&L latent</th><th>Stop $</th><th>Objectif $</th><th>Durée</th></tr>"+
+  (S.pos.length?S.pos.map(p=>{const t=T[p.addr],cur=t?t.price:p.px,u=p.qty*cur/FX()-p.size;return row([p.name,p.st,p.px.toPrecision(4),cur.toPrecision(4),f(p.size),f(u),p.sl.toPrecision(4),p.tp.toPrecision(4),f((now()-p.t0)/6e4,0)+" min"],{5:cl(u)})}).join(""):`<tr><td class="l m" colspan="9">Aucune position ouverte.</td></tr>`);
+ $("tTr").innerHTML="<tr><th>Token</th><th>Stratégie</th><th>Taille</th><th>Frais</th><th>Net</th><th class=l>Sortie</th></tr>"+
+  (n?S.tr.slice(0,15).map(t=>row([t.name,t.st,f(t.size),f(t.fees),f(t.net),t.why],{4:cl(t.net),5:"m"})).join(""):`<tr><td class="l m" colspan="6">Aucun trade clôturé. Les signaux sont rares sur marché réel, c’est normal.</td></tr>`);
+ $("log").innerHTML=S.log.join("");draw()}
+function draw(){const c=$("cv"),w=c.width=c.clientWidth*devicePixelRatio,h=c.height=160*devicePixelRatio,x=c.getContext("2d");x.clearRect(0,0,w,h);const d=S.eq.length>1?S.eq:[500,500],lo=Math.min(...d,500)*.998,hi=Math.max(...d,500)*1.002,Y=v=>h-(v-lo)/(hi-lo)*(h-10)-5;
+ x.strokeStyle="#243049";x.setLineDash([4,4]);x.beginPath();x.moveTo(0,Y(500));x.lineTo(w,Y(500));x.stroke();x.setLineDash([]);x.strokeStyle=d[d.length-1]>=500?"#55d6a8":"#f07178";x.lineWidth=2;x.beginPath();d.forEach((v,i)=>{const X=i/(d.length-1)*w;i?x.lineTo(X,Y(v)):x.moveTo(X,Y(v))});x.stroke()}
+function stop(){clearInterval(timer);timer=null;$("bStart").textContent="Démarrer";$("bStart").className="go"}
+function start(){if(S.stopped)return;poll();timer=setInterval(poll,POLL);$("bStart").textContent="Arrêter";$("bStart").className="stop"}
+$("bStart").onclick=()=>{timer?(stop(),render()):start()};
+$("bPause").onclick=()=>{paused=!paused;$("bPause").classList.toggle("on",paused);$("bPause").textContent=paused?"Reprendre les entrées":"Pause des entrées";render()};
+$("bEmerg").onclick=emergency;$("bDiag").onclick=diag;
+$("bReset").onclick=()=>{stop();paused=false;T={};init(true);render()};
+$("risk").oninput=e=>{P.risk=+e.target.value;$("vR").textContent=f(P.risk,1)};$("dayLoss").oninput=e=>{P.dayLoss=+e.target.value;$("vD").textContent=P.dayLoss};$("feeM").oninput=e=>{P.feeM=+e.target.value;$("vF").textContent=P.feeM};
+$("bCsv").onclick=()=>{const t="token,strategie,entree,sortie,taille_aud,frais_aud,net_aud,raison\n"+S.tr.map(t=>[t.name,t.st,new Date(t.t0).toISOString(),new Date(t.t1).toISOString(),t.size.toFixed(2),t.fees.toFixed(2),t.net.toFixed(2),t.why].join(",")).join("\n");const a=$("csv");a.value=t;a.hidden=false;try{navigator.clipboard.writeText(t)}catch(e){}a.select()};
+init();render();addEventListener("resize",draw);
+</script></body></html>
